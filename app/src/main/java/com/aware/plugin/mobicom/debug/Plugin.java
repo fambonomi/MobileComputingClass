@@ -4,7 +4,9 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.database.ContentObserver;
 import android.database.Cursor;
+import android.os.Handler;
 import android.util.Log;
 
 import com.aware.Applications;
@@ -37,6 +39,13 @@ public class Plugin extends Aware_Plugin {
 
     private static long last_timestamp = 0;
 
+    private LightObserver lightObs = null;
+
+    private String ACTION_AWARE_LOCATION_TYPE_INDOOR = "ACTION_AWARE_LOCATION_TYPE_INDOOR";
+    private String ACTION_AWARE_LOCATION_TYPE_OUTDOOR = "ACTION_AWARE_LOCATION_TYPE_OUTDOOR";
+    private String EXTRA_ELAPSED = "elapsed_time";
+    private double indoor_elapsed = 0; //indoor time counter
+    private double outdoor_elapsed = 0; //outdoor time counter
 
     @Override
     public void onCreate() {
@@ -45,6 +54,7 @@ public class Plugin extends Aware_Plugin {
         //Activate sensors
         Aware.setSetting(this, Aware_Preferences.STATUS_SCREEN, true);
         Aware.setSetting(this, Aware_Preferences.STATUS_LIGHT, true);
+        Aware.setSetting(this, Aware_Preferences.FREQUENCY_LIGHT, 20000);
         Aware.setSetting(this, Aware_Preferences.STATUS_APPLICATIONS, true);
 
         //Apply settings
@@ -57,7 +67,27 @@ public class Plugin extends Aware_Plugin {
         filter.addAction(Applications.ACTION_AWARE_APPLICATIONS_FOREGROUND);
 
         registerReceiver(dataReceiver, filter);
+
+        lightObs = new LightObserver(new Handler());
+        getContentResolver().registerContentObserver(Light_Provider.Light_Data.CONTENT_URI, true, lightObs);
+
+        //Context producer that will share the current context with AWARE and other plugins/applications
+        CONTEXT_PRODUCER = new ContextProducer() {
+            @Override
+            public void onContext() {
+
+                Intent context = new Intent(ACTION_AWARE_LOCATION_TYPE_INDOOR);
+                context.putExtra(EXTRA_ELAPSED, indoor_elapsed);
+                sendBroadcast(context);
+
+                Intent contextR = new Intent(ACTION_AWARE_LOCATION_TYPE_OUTDOOR);
+                context.putExtra(EXTRA_ELAPSED, outdoor_elapsed);
+                sendBroadcast(contextR);
+            }
+        };
     }
+
+
 
     private SensorDataReceiver dataReceiver = new SensorDataReceiver();
     public static class SensorDataReceiver extends BroadcastReceiver {
@@ -101,15 +131,15 @@ public class Plugin extends Aware_Plugin {
                         is_bright = true;
                     }
                 }
+                if( light != null && ! light.isClosed()) light.close();
             }
             if( intent.getAction().equals(Applications.ACTION_AWARE_APPLICATIONS_FOREGROUND)) {
-
                 date.set(Calendar.HOUR_OF_DAY, 0);
                 date.set(Calendar.MINUTE, 0);
                 date.set(Calendar.SECOND, 0);
 
                 String where = Applications_Provider.Applications_Foreground.TIMESTAMP + ">" + date.getTimeInMillis() + Applications_Provider.Applications_Foreground.PACKAGE_NAME + " LIKE '%alarm%' OR "+ Applications_Provider.Applications_Foreground.APPLICATION_NAME + " LIKE '%alarm%'";
-                Cursor alarm = context.getContentResolver().query(Applications_Provider.Applications_Foreground.CONTENT_URI, null, where, null, null, null );
+                Cursor alarm = context.getContentResolver().query(Applications_Provider.Applications_Foreground.CONTENT_URI, null, where, null, null );
                 if( alarm != null && alarm.moveToFirst() ) {
                     is_alarm_set = true;
                 }
@@ -122,14 +152,54 @@ public class Plugin extends Aware_Plugin {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-
         return super.onStartCommand(intent, flags, startId);
+    }
+
+    private class LightObserver extends ContentObserver {
+
+        public LightObserver(Handler handler) {
+            super(handler);
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            super.onChange(selfChange);
+
+            String label = "";
+
+            Cursor light_data = getContentResolver().query(Light_Provider.Light_Data.CONTENT_URI, null, null, null, Light_Provider.Light_Data.TIMESTAMP + " DESC LIMIT 1");
+            if( light_data != null && light_data.moveToFirst() ) {
+
+                double light_val = light_data.getDouble(light_data.getColumnIndex(Light_Provider.Light_Data.LIGHT_LUX));
+                if( light_val < 50 ) {
+                    label = "indoor";
+                } else {
+                    label = "outdoor";
+                }
+
+                if( DEBUG ) {
+                    Log.d(TAG, "Current label:" + label);
+                }
+
+                //e.g., Setting label via broadcast
+//                Intent setLightLabel = new Intent(Light.ACTION_AWARE_LIGHT_LABEL);
+//                setLightLabel.putExtra(Light.EXTRA_LABEL, label);
+//                sendBroadcast(setLightLabel);
+
+                //e.g., Setting label directly on the database
+//                ContentValues update_label = new ContentValues();
+//                update_label.put(Light_Provider.Light_Data.LABEL, label);
+//                getContentResolver().update(Light_Provider.Light_Data.CONTENT_URI, update_label, Light_Provider.Light_Data._ID +"=" + light_data.getInt(light_data.getColumnIndex(Light_Provider.Light_Data._ID)), null);
+            }
+            if( light_data != null && ! light_data.isClosed()) light_data.close();
+        }
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
 
-
+        getContentResolver().unregisterContentObserver(lightObs);
+        unregisterReceiver(dataReceiver);
     }
 }
